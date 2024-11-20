@@ -1,0 +1,147 @@
+import re
+import sqlite3
+import spacy
+import nltk
+from nltk.corpus import wordnet as wn
+
+# Завантаження англійської моделі spaCy
+nlp = spacy.load("en_core_web_sm")
+nlp.add_pipe("sentencizer", before="tok2vec")
+
+# Завантаження WordNet
+nltk.download('wordnet')
+
+# Функція для зчитування тексту
+def preprocess_text(file_path):
+    with open(file_path, encoding="utf-8") as file:
+        text = file.read().lower()
+    text = re.sub(r"[^a-z\s-]", "", text)  # Видалення зайвих символів
+    return text.splitlines()  # Повертаємо список речень
+
+# Функція для створення прикладу використання слова
+def generate_example(word, sentence):
+    if word in sentence:
+        return sentence.strip()  # Речення з тексту
+    return f"This is an example sentence using the word '{word}'."  # Шаблон
+
+# Функція для отримання значення слова з WordNet
+def get_word_meaning(word):
+    synsets = wn.synsets(word)
+    if synsets:
+        return synsets[0].definition()  # Повертаємо перше визначення
+    return "Meaning not available"
+
+# Функція для створення бази даних
+def create_database(db_name="words.db"):
+    try:
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+
+        # Таблиця слів
+        cursor.execute('''CREATE TABLE IF NOT EXISTS words (
+                          word_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          spelling TEXT,
+                          meaning TEXT,
+                          pos_type TEXT,
+                          examples TEXT)''')
+
+        # Таблиця частин мови
+        cursor.execute('''CREATE TABLE IF NOT EXISTS pos (
+                          pos_type TEXT PRIMARY KEY)''')
+
+        # Таблиця словоформ
+        cursor.execute('''CREATE TABLE IF NOT EXISTS inflections (
+                          word_id INTEGER,
+                          inflected_form TEXT,
+                          inflected_type TEXT,
+                          FOREIGN KEY (word_id) REFERENCES words(word_id))''')
+
+        # Таблиця типів словоформ
+        cursor.execute('''CREATE TABLE IF NOT EXISTS inflection_types (
+                          inflection_type TEXT PRIMARY KEY)''')
+
+        conn.commit()
+        conn.close()
+
+        print("Database and tables created successfully.")
+
+    except Exception as e:
+        print(f"Error creating database: {e}")
+
+# Функція для заповнення бази даних
+def populate_database(sentences, db_name="words.db"):
+    try:
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+
+        pos_seen = set()
+        inflection_types_seen = set()
+
+        pos_to_insert = []
+        inflection_types_to_insert = []
+
+        # Обробка тексту
+        for doc in nlp.pipe(sentences, batch_size=1000, disable=["ner", "parser"]):
+            for sent in doc.sents:
+                for token in sent:
+                    spelling = token.text
+                    lemma = token.lemma_
+                    pos = token.pos_
+                    inflection_type = token.tag_
+
+                    # Отримання значення та прикладу
+                    meaning = get_word_meaning(lemma)
+                    examples = generate_example(spelling, sent.text)
+
+                    # Додавання нової частини мови
+                    if pos not in pos_seen:
+                        pos_to_insert.append((pos,))
+                        pos_seen.add(pos)
+
+                    # Вставка слова
+                    cursor.execute('''INSERT INTO words (spelling, meaning, pos_type, examples)
+                                      VALUES (?, ?, ?, ?)''',
+                                   (lemma, meaning, pos, examples))
+
+                    word_id = cursor.lastrowid  # Отримання ID слова
+
+                    # Додавання типу словоформи
+                    if inflection_type not in inflection_types_seen:
+                        inflection_types_to_insert.append((inflection_type,))
+                        inflection_types_seen.add(inflection_type)
+
+                    # Вставка словоформи
+                    cursor.execute('''INSERT INTO inflections (word_id, inflected_form, inflected_type)
+                                      VALUES (?, ?, ?)''', (word_id, spelling, inflection_type))
+
+        # Вставка частин мови та типів словоформ
+        if pos_to_insert:
+            cursor.executemany("INSERT OR IGNORE INTO pos (pos_type) VALUES (?)", pos_to_insert)
+
+        if inflection_types_to_insert:
+            cursor.executemany("INSERT OR IGNORE INTO inflection_types (inflection_type) VALUES (?)",
+                               inflection_types_to_insert)
+
+        conn.commit()
+        conn.close()
+
+        print("Data successfully inserted into the database.")
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error populating database: {e}")
+
+# Основна функція
+def main():
+    try:
+        file_path = file_path = "C:\\Users\\Vladislav\\PycharmProjects\\pythonProject2\\.venv\\Lib\\site-packages\\text.txt"
+  # Шлях до файлу
+        sentences = preprocess_text(file_path)
+        create_database()
+        populate_database(sentences)
+    except Exception as e:
+        print(f"Error in main: {e}")
+
+if __name__ == "__main__":
+    main()
